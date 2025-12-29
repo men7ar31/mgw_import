@@ -21,7 +21,7 @@ import {
   loginSucursal,
   MGWSession
 } from "./client";
-import { xlsBufferTo2D } from "./xls-utils";
+import { parseVentasExportTo2D, xlsBufferTo2D } from "./xls-utils";
 import { cleanBlock, isTotalRow, parseFirstHtmlTable, parseHtmlTable10, splitStatsBlocks } from "./html-utils";
 import { parseFlexibleNumber, parseNumberAny, round2 } from "./number-utils";
 import { CursorDoc, HistCollectionName, RowDoc } from "./types";
@@ -71,6 +71,33 @@ async function getHeader(db: Db, sheet: HistCollectionName): Promise<string[] | 
     _id: `${HEADER_META_PREFIX}${sheet}`
   });
   return doc?.header || null;
+}
+
+function padRow(row: any[], targetLen: number): any[] {
+  const out = [...row];
+  while (out.length < targetLen) out.push("");
+  return out;
+}
+
+function findVentasHeaderRowIdx(data: string[][]): number {
+  for (let i = 0; i < data.length; i++) {
+    const rowLower = (data[i] || []).map((c) => normalizeHeaderCell(c));
+    const hasFecha = rowLower.some((v) => v.indexOf("fecha") >= 0);
+    const hasNumero = rowLower.some((v) => {
+      const compact = v.replace(/[^a-z0-9]/g, "");
+      return compact === "nro" || compact === "numero" || compact === "num" || compact === "n";
+    });
+    if (hasFecha && hasNumero) return i;
+  }
+  return 0;
+}
+
+function normalizeHeaderCell(v: unknown): string {
+  return String(v ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
 export async function startImport(fechaOverride?: string) {
@@ -167,10 +194,16 @@ export async function runImportOnce(): Promise<ImportStats> {
 async function importarVentas(session: MGWSession, sucursal: string, fecha: string, db: Db) {
   const buffer = await fetchVentasXls(session, fecha, fecha);
   if (!buffer || buffer.length === 0) return;
-  const data = xlsBufferTo2D(buffer);
+  const rawData = parseVentasExportTo2D(buffer);
+  if (!rawData || rawData.length < 2) return;
+
+  const headerRowIdx = findVentasHeaderRowIdx(rawData);
+  const data = rawData.slice(headerRowIdx);
   if (!data || data.length < 2) return;
 
-  const headerSrc = data[0].map((h: any) => String(h ?? ""));
+  const maxCols = data.reduce((max, row) => Math.max(max, row.length), 0);
+  const headerRow = padRow(data[0] || [], maxCols);
+  const headerSrc = headerRow.map((h: any) => String(h ?? ""));
   const idxFechaSrc = detectFechaColumnVentas(headerSrc, data as string[][]);
   const headerFinal = ["Sucursal", ...headerSrc];
   if (idxFechaSrc >= 0) headerFinal[1 + idxFechaSrc] = "Fecha";
@@ -178,13 +211,42 @@ async function importarVentas(session: MGWSession, sucursal: string, fecha: stri
   await setHeader(db, "Ventas_Hist", headerFinal);
 
   const idxFechaFinal = idxFechaSrc >= 0 ? 1 + idxFechaSrc : -1;
+  const idxNumeroSrc = headerRow.findIndex((h: any) => {
+    const compact = normalizeHeaderCell(h).replace(/[^a-z0-9]/g, "");
+    return compact === "nro" || compact === "numero" || compact === "num" || compact === "n";
+  });
+  const idxComentarioSrc = headerRow.findIndex((h: any) => {
+    const v = normalizeHeaderCell(h);
+    return v.indexOf("comentario") >= 0 || v.indexOf("detalle") >= 0 || v.indexOf("producto") >= 0;
+  });
+  const idxNumeroFinal = idxNumeroSrc >= 0 ? 1 + idxNumeroSrc : -1;
+  const idxComentarioFinal = idxComentarioSrc >= 0 ? 1 + idxComentarioSrc : -1;
+
   const rows: any[][] = [];
+  let lastKeptRow: any[] | null = null;
 
   for (let i = 1; i < data.length; i++) {
-    const rowRaw = [sucursal, ...data[i]];
+    const rowSrc = padRow(data[i] || [], headerRow.length);
+    const rowRaw = [sucursal, ...rowSrc];
+    while (rowRaw.length < headerFinal.length) rowRaw.push("");
     if (looksLikeVentasHeaderRow(rowRaw as string[])) continue;
     if (isIntercalatedHeaderVentas(rowRaw)) continue;
     if (isRowBlank(rowRaw)) continue;
+
+    const hasNumero = idxNumeroFinal >= 0 && String(rowRaw[idxNumeroFinal] ?? "").trim() !== "";
+    const hasFechaVal = idxFechaFinal >= 0 && String(rowRaw[idxFechaFinal] ?? "").trim() !== "";
+    const comentarioVal =
+      idxComentarioFinal >= 0 && rowRaw.length > idxComentarioFinal ? String(rowRaw[idxComentarioFinal] ?? "").trim() : "";
+    const isDetalleContinuacion = !hasNumero && !hasFechaVal && comentarioVal !== "" && lastKeptRow;
+    if (isDetalleContinuacion && lastKeptRow) {
+      const prevComentario =
+        idxComentarioFinal >= 0 && lastKeptRow.length > idxComentarioFinal
+          ? String(lastKeptRow[idxComentarioFinal] ?? "").trim()
+          : "";
+      const combined = prevComentario ? `${prevComentario} ${comentarioVal}` : comentarioVal;
+      lastKeptRow[idxComentarioFinal] = combined;
+      continue;
+    }
 
     if (idxFechaFinal >= 0 && rowRaw.length > idxFechaFinal) {
       const fn = normalizeDateInput(rowRaw[idxFechaFinal]);
@@ -198,6 +260,7 @@ async function importarVentas(session: MGWSession, sucursal: string, fecha: stri
     }
 
     rows.push(rowRaw);
+    lastKeptRow = rowRaw;
   }
 
   if (!rows.length) return;
@@ -208,7 +271,7 @@ async function importarVentas(session: MGWSession, sucursal: string, fecha: stri
       (idxFechaFinal >= 0 && row.length > idxFechaFinal
         ? normalizeDateInput(String(row[idxFechaFinal]).replace(/^'+/, ""))
         : normalizeDateInput(fecha)) || normalizeDateInput(fecha);
-    const rowNormalized = [...row];
+    const rowNormalized = padRow([...row], headerFinal.length);
     if (idxFechaFinal >= 0 && rowNormalized.length > idxFechaFinal) {
       rowNormalized[idxFechaFinal] = fechaVal;
     }
