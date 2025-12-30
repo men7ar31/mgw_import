@@ -3,4 +3,6 @@ dist
 npm-debug.log
 .env
 .env.local
+.next
+.turbo
 .git
