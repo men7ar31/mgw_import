@@ -215,15 +215,38 @@ async function importarVentas(session: MGWSession, sucursal: string, fecha: stri
     const compact = normalizeHeaderCell(h).replace(/[^a-z0-9]/g, "");
     return compact === "nro" || compact === "numero" || compact === "num" || compact === "n";
   });
-  const idxComentarioSrc = headerRow.findIndex((h: any) => {
-    const v = normalizeHeaderCell(h);
-    return v.indexOf("comentario") >= 0 || v.indexOf("detalle") >= 0 || v.indexOf("producto") >= 0;
-  });
-  const idxNumeroFinal = idxNumeroSrc >= 0 ? 1 + idxNumeroSrc : -1;
-  const idxComentarioFinal = idxComentarioSrc >= 0 ? 1 + idxComentarioSrc : -1;
+  const idxResponsableSrc = headerRow.findIndex((h: any) => normalizeHeaderCell(h).indexOf("responsable") >= 0);
+  const idxFormaPagoSrc = headerRow.findIndex((h: any) => normalizeHeaderCell(h).indexOf("forma") >= 0);
+  const idxClienteSrc = headerRow.findIndex((h: any) => normalizeHeaderCell(h).indexOf("cliente") >= 0);
+  const idxDetalleFinal = headerFinal.length - 1;
 
   const rows: any[][] = [];
-  let lastKeptRow: any[] | null = null;
+  let currentTicket: any[] | null = null;
+  let detalleParts: string[] = [];
+
+  const finalizeCurrent = () => {
+    if (!currentTicket) return;
+    const detalleStr = detalleParts.join(" ").trim();
+    if (idxDetalleFinal >= 0 && currentTicket.length > idxDetalleFinal) {
+      currentTicket[idxDetalleFinal] = detalleStr;
+    }
+
+    if (idxFechaFinal >= 0 && currentTicket.length > idxFechaFinal) {
+      const fn = normalizeDateInput(currentTicket[idxFechaFinal]);
+      if (fn) currentTicket[idxFechaFinal] = fn;
+    }
+
+    const idxH = 7; // col H (Total) with Sucursal prepended
+    if (currentTicket.length > idxH) {
+      const parsed = parseFlexibleNumber(currentTicket[idxH]);
+      if (parsed != null) currentTicket[idxH] = parsed;
+    }
+
+    const rowPadded = padRow(currentTicket, headerFinal.length);
+    rows.push(rowPadded);
+    currentTicket = null;
+    detalleParts = [];
+  };
 
   for (let i = 1; i < data.length; i++) {
     const rowSrc = padRow(data[i] || [], headerRow.length);
@@ -233,18 +256,29 @@ async function importarVentas(session: MGWSession, sucursal: string, fecha: stri
     if (isIntercalatedHeaderVentas(rowRaw)) continue;
     if (isRowBlank(rowRaw)) continue;
 
-    const hasNumero = idxNumeroFinal >= 0 && String(rowRaw[idxNumeroFinal] ?? "").trim() !== "";
-    const hasFechaVal = idxFechaFinal >= 0 && String(rowRaw[idxFechaFinal] ?? "").trim() !== "";
-    const comentarioVal =
-      idxComentarioFinal >= 0 && rowRaw.length > idxComentarioFinal ? String(rowRaw[idxComentarioFinal] ?? "").trim() : "";
-    const isDetalleContinuacion = !hasNumero && !hasFechaVal && comentarioVal !== "" && lastKeptRow;
-    if (isDetalleContinuacion && lastKeptRow) {
-      const prevComentario =
-        idxComentarioFinal >= 0 && lastKeptRow.length > idxComentarioFinal
-          ? String(lastKeptRow[idxComentarioFinal] ?? "").trim()
-          : "";
-      const combined = prevComentario ? `${prevComentario} ${comentarioVal}` : comentarioVal;
-      lastKeptRow[idxComentarioFinal] = combined;
+    const numeroVal = idxNumeroSrc >= 0 ? String(rowSrc[idxNumeroSrc] ?? "").trim() : "";
+    const fechaVal = idxFechaSrc >= 0 ? String(rowSrc[idxFechaSrc] ?? "").trim() : "";
+    const responsableVal = idxResponsableSrc >= 0 ? String(rowSrc[idxResponsableSrc] ?? "").trim() : "";
+    const clienteVal = idxClienteSrc >= 0 ? String(rowSrc[idxClienteSrc] ?? "").trim() : "";
+    const formaVal = idxFormaPagoSrc >= 0 ? String(rowSrc[idxFormaPagoSrc] ?? "").trim() : "";
+
+    const isTicketRow = /^\d+$/.test(numeroVal) && /\d{4}-\d{2}-\d{2}/.test(fechaVal);
+    const isProductRow = !/^\d+$/.test(numeroVal) && parseFlexibleNumber(fechaVal) != null;
+
+    if (isTicketRow) {
+      finalizeCurrent();
+      currentTicket = rowRaw;
+      detalleParts = [];
+      continue;
+    }
+
+    if (isProductRow && currentTicket) {
+      const precio = fechaVal;
+      const cantidad = responsableVal;
+      const clienteNum = clienteVal;
+      const itemTotal = formaVal;
+      const fragment = [numeroVal, precio, cantidad, clienteNum, itemTotal].join(" ").trim();
+      if (fragment) detalleParts.push(fragment);
       continue;
     }
 
@@ -259,9 +293,11 @@ async function importarVentas(session: MGWSession, sucursal: string, fecha: stri
       if (parsed != null) rowRaw[idxH] = parsed;
     }
 
-    rows.push(rowRaw);
-    lastKeptRow = rowRaw;
+    currentTicket = rowRaw;
+    detalleParts = [];
   }
+
+  finalizeCurrent();
 
   if (!rows.length) return;
 
