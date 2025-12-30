@@ -4,7 +4,7 @@ import { getHeadersMap, loadAllRowsOrdered } from "./importer";
 import { getNumericColsFromHeader } from "./rows";
 import { HistCollectionName } from "./types";
 
-export async function buildExcelBuffer(): Promise<Buffer> {
+export async function buildExcelBuffer(): Promise<ArrayBuffer> {
   const [rowsBySheet, headers] = await Promise.all([loadAllRowsOrdered(), getHeadersMap()]);
 
   const workbook = new ExcelJS.Workbook();
@@ -33,7 +33,11 @@ export async function buildExcelBuffer(): Promise<Buffer> {
   }
 
   const buffer = await workbook.xlsx.writeBuffer();
-  return Buffer.from(buffer);
+  // Normalize to ArrayBuffer so it's compatible with Web Response/Blob types
+  const view = new Uint8Array(buffer as ArrayBufferLike);
+  const arrayBuffer = new ArrayBuffer(view.byteLength);
+  new Uint8Array(arrayBuffer).set(view);
+  return arrayBuffer;
 }
 
 function inferHeader(rows: { row: any[] }[]): string[] | null {

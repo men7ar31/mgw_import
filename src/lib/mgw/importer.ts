@@ -28,6 +28,7 @@ import { CursorDoc, HistCollectionName, RowDoc } from "./types";
 
 const HEADER_META_PREFIX = "header:";
 const HEADER_COLLECTION = "mgw_meta";
+type HeaderDoc = { _id: string; header: string[]; updatedAt?: Date; createdAt?: Date };
 
 async function getCursor(db: Db): Promise<CursorDoc> {
   const curCol = db.collection<CursorDoc>("mgw_cursor");
@@ -59,7 +60,8 @@ async function saveCursor(db: Db, patch: Partial<CursorDoc>) {
 }
 
 async function setHeader(db: Db, sheet: HistCollectionName, header: string[]) {
-  await db.collection(HEADER_COLLECTION).updateOne(
+  const col = db.collection<HeaderDoc>(HEADER_COLLECTION);
+  await col.updateOne(
     { _id: `${HEADER_META_PREFIX}${sheet}` },
     { $set: { header, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
     { upsert: true }
@@ -67,9 +69,8 @@ async function setHeader(db: Db, sheet: HistCollectionName, header: string[]) {
 }
 
 async function getHeader(db: Db, sheet: HistCollectionName): Promise<string[] | null> {
-  const doc = await db.collection(HEADER_COLLECTION).findOne<{ header: string[] }>({
-    _id: `${HEADER_META_PREFIX}${sheet}`
-  });
+  const col = db.collection<HeaderDoc>(HEADER_COLLECTION);
+  const doc = await col.findOne({ _id: `${HEADER_META_PREFIX}${sheet}` });
   return doc?.header || null;
 }
 

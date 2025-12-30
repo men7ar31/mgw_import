@@ -102,7 +102,7 @@ async function getSheetMeta(sheets: sheets_v4.Sheets, spreadsheetId: string) {
   (meta.data.sheets || []).forEach((s) => {
     const title = s.properties?.title;
     const id = s.properties?.sheetId;
-    if (title && id !== undefined) map[title] = id;
+    if (title && typeof id === "number") map[title] = id;
   });
   return map;
 }

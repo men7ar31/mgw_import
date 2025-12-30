@@ -4,10 +4,13 @@ import { buildExcelBuffer } from "@/lib/mgw/exporter";
 export async function GET() {
   try {
     const buffer = await buildExcelBuffer();
-    return new NextResponse(buffer, {
+    const blob = new Blob([buffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    });
+
+    return new NextResponse(blob, {
       status: 200,
       headers: {
-        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="mgw_export.xlsx"`
       }
     });

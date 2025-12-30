@@ -90,7 +90,7 @@ export async function fetchCcXls(session: MGWSession, fecha: string): Promise<Bu
 }
 
 function buildVentasPayload(desde: string, hasta: string) {
-  const p: Record<string, string | number> = {
+  const p: Record<string, string> = {
     input_exportar_ventas: "0",
     producto_para_detalles: "",
     rango_franja: "rango",
@@ -118,9 +118,9 @@ function buildVentasPayload(desde: string, hasta: string) {
     checkbox_combos: "1",
     tiendas_seleccionadas: "{}"
   };
-  for (let i = 1; i <= 8; i++) p[`grupo[${i}]`] = 1;
-  for (let j = 1; j <= 4; j++) p[`forma[${j}]`] = 1;
-  (p as any)["descuento[2]"] = 1;
+  for (let i = 1; i <= 8; i++) p[`grupo[${i}]`] = "1";
+  for (let j = 1; j <= 4; j++) p[`forma[${j}]`] = "1";
+  p["descuento[2]"] = "1";
   return p;
 }
 

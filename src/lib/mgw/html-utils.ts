@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import type { Element } from "domhandler";
 
 export function parseFirstHtmlTable(html: string): string[][] {
   return parseHtmlTableAt(html, 0);
@@ -16,7 +17,7 @@ export function parseHtmlTableAt(html: string, index: number): string[][] {
   return htmlTableTo2D(root, table);
 }
 
-function htmlTableTo2D(root: cheerio.CheerioAPI, table: cheerio.Element): string[][] {
+function htmlTableTo2D(root: cheerio.CheerioAPI, table: Element): string[][] {
   const rows: string[][] = [];
   let maxCols = 0;
 
