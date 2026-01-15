@@ -18,8 +18,6 @@ export default function HomePage() {
   const [loading, setLoading] = useState<string | null>(null);
   const [fecha, setFecha] = useState<string>("");
   const [message, setMessage] = useState<string>("");
-  const [sheetId, setSheetId] = useState<string>("");
-  const [sheetUrl, setSheetUrl] = useState<string>("");
   const [autoSync, setAutoSync] = useState<{ running: boolean; intervalMs: number } | null>(null);
 
   const fetchStatus = async () => {
@@ -61,8 +59,6 @@ export default function HomePage() {
       const data = await res.json();
       if (data.ok && data.status) {
         setAutoSync({ running: data.status.running, intervalMs: data.status.intervalMs });
-        if (data.status.spreadsheetId) setSheetId(data.status.spreadsheetId);
-        if (data.status.spreadsheetId) setSheetUrl(`https://docs.google.com/spreadsheets/d/${data.status.spreadsheetId}`);
       }
     } catch {
       /* ignore */
@@ -80,36 +76,12 @@ export default function HomePage() {
       const res = await fetch("/api/mgw/auto-sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(start ? { action: "start", spreadsheetId: sheetId || undefined } : { action: "stop" })
+        body: JSON.stringify(start ? { action: "start" } : { action: "stop" })
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Error");
-      if (data.status?.spreadsheetId) setSheetId(data.status.spreadsheetId);
-      if (data.status?.spreadsheetId) setSheetUrl(`https://docs.google.com/spreadsheets/d/${data.status.spreadsheetId}`);
       if (data.status) setAutoSync({ running: data.status.running, intervalMs: data.status.intervalMs });
       setMessage(start ? "Auto-sync iniciado" : "Auto-sync detenido");
-    } catch (e: any) {
-      setMessage(e?.message || String(e));
-    } finally {
-      setLoading(null);
-    }
-  };
-
-  const pushSheets = async (createNew = false) => {
-    setLoading("/api/mgw/push-sheets");
-    setMessage("");
-    setSheetUrl("");
-    try {
-      const res = await fetch("/api/mgw/push-sheets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spreadsheetId: sheetId || undefined, createNew })
-      });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "Error");
-      setSheetId(data.spreadsheetId || sheetId);
-      setSheetUrl(data.url || "");
-      setMessage("Sheet generado/actualizado correctamente");
     } catch (e: any) {
       setMessage(e?.message || String(e));
     } finally {
@@ -156,12 +128,6 @@ export default function HomePage() {
           <button disabled={loading === "/api/mgw/stop"} onClick={() => runAction("/api/mgw/stop")}>
             Stop
           </button>
-          <a href={exportUrl} style={{ padding: "8px 12px", border: "1px solid #ccc", borderRadius: 4, textDecoration: "none" }}>
-            Descargar Excel
-          </a>
-          <button disabled={loading === "/api/mgw/push-sheets"} onClick={() => pushSheets(false)}>
-            Cargar en Google Sheets
-          </button>
           <button
             disabled={loading === "/api/mgw/auto-sync"}
             onClick={() => toggleAutoSync(!autoSync?.running)}
@@ -169,23 +135,9 @@ export default function HomePage() {
           >
             {autoSync?.running ? "Detener auto-sync" : "Iniciar auto-sync"}
           </button>
-        </div>
-
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <input
-            value={sheetId}
-            onChange={(e) => setSheetId(e.target.value)}
-            placeholder="Spreadsheet ID (opcional)"
-            style={{ padding: 8, minWidth: 260, border: "1px solid #ccc", borderRadius: 4 }}
-          />
-          <button disabled={loading === "/api/mgw/push-sheets"} onClick={() => pushSheets(true)}>
-            Crear nuevo sheet
-          </button>
-          {sheetUrl && (
-            <a href={sheetUrl} target="_blank" rel="noreferrer" style={{ color: "#0a58ca" }}>
-              Abrir Sheet
-            </a>
-          )}
+          <a href={exportUrl} style={{ padding: "8px 12px", border: "1px solid #ccc", borderRadius: 4, textDecoration: "none" }}>
+            Descargar Excel
+          </a>
         </div>
       </section>
 

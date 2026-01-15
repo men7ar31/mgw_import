@@ -13,7 +13,7 @@ export const DATE_FMT = "yyyy-MM-dd";
 export const AR_NUM_FMT = "#,##0.00";
 
 export const FECHA_INICIO_MASTER =
-  process.env.FECHA_INICIO_MASTER || process.env.MGW_FECHA_INICIO || "2025-11-26";
+  process.env.FECHA_INICIO_MASTER || process.env.MGW_FECHA_INICIO || "2025-01-01";
 
 export const MAX_DIAS_POR_CORRIDA = Number(process.env.MAX_DIAS_POR_CORRIDA || 45);
 export const DEDUPE_LOOKBACK_ROWS = Number(process.env.DEDUPE_LOOKBACK_ROWS || 20000);

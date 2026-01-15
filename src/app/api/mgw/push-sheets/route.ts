@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { pushToGoogleSheets } from "@/lib/mgw/sheets-export";
 
 export async function POST(req: NextRequest) {
   try {
-    const body = (await req.json().catch(() => ({}))) || {};
-    const { spreadsheetId, createNew } = body || {};
-    const result = await pushToGoogleSheets({ spreadsheetId, createNew });
-    return NextResponse.json({ ok: true, ...result });
+    // Sheets export deshabilitado a pedido: solo base de datos.
+    const message = "Exportar a Google Sheets está deshabilitado. Los datos solo se guardan en la base de datos.";
+    return NextResponse.json({ ok: false, error: message }, { status: 400 });
   } catch (error: any) {
     console.error(error);
     return NextResponse.json({ ok: false, error: error?.message || String(error) }, { status: 500 });

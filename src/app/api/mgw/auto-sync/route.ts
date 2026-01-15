@@ -9,12 +9,12 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) || {};
     const action = body.action || "start";
-    const { spreadsheetId, intervalMs } = body;
+    const { intervalMs } = body;
     if (action === "stop") {
       const status = stopAutoSync();
       return NextResponse.json({ ok: true, status });
     }
-    const status = await startAutoSync({ spreadsheetId, intervalMs });
+    const status = await startAutoSync({ intervalMs });
     return NextResponse.json({ ok: true, status });
   } catch (error: any) {
     console.error(error);

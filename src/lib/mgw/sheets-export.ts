@@ -12,6 +12,12 @@ const SHEET_NAMES: HistCollectionName[] = [
   "Clientes_Hist"
 ];
 
+const ROWS_PER_VALUE_BATCH = Number(process.env.GOOGLE_SHEETS_ROWS_PER_BATCH || 10000);
+const MAX_VALUE_BATCH_BYTES = Number(process.env.GOOGLE_SHEETS_MAX_BATCH_BYTES || 8_000_000);
+const MAX_RATE_LIMIT_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = Number(process.env.GOOGLE_SHEETS_RETRY_DELAY_MS || 2000);
+const WRITE_THROTTLE_MS = Number(process.env.GOOGLE_SHEETS_WRITE_THROTTLE_MS || 0);
+
 type PushSheetsParams = {
   spreadsheetId?: string;
   createNew?: boolean;
@@ -28,18 +34,45 @@ export async function pushToGoogleSheets(params: PushSheetsParams) {
   await ensureSheetsExist(sheets, spreadsheetId, SHEET_NAMES);
   const sheetMeta = await getSheetMeta(sheets, spreadsheetId);
 
+  const clearRanges: string[] = [];
+  const valueRanges: sheets_v4.Schema$ValueRange[] = [];
+  const formatRequests: sheets_v4.Schema$Request[] = [];
+
   for (const name of SHEET_NAMES) {
     const header = headers[name] || inferHeader(rowsBySheet[name]);
     const values = buildValues(header, rowsBySheet[name]);
     const sheetId = sheetMeta[name];
-    await replaceSheetValues(sheets, spreadsheetId, name, sheetId, values);
+    const totalRows = values.length || 1;
+    const maxCols = values.reduce((m, r) => Math.max(m, r.length), 0) || 1;
+
+    clearRanges.push(`'${name}'`);
+    valueRanges.push(...buildValueRanges(name, values));
 
     if (sheetId !== undefined) {
-      const fmtRequests = buildFormatRequests(name, sheetId, header, values.length);
-      if (fmtRequests.length) {
-        await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: fmtRequests } });
-      }
+      formatRequests.push(
+        buildResizeRequest(sheetId, totalRows, maxCols),
+        ...buildFormatRequests(name, sheetId, header, totalRows)
+      );
     }
+  }
+
+  if (formatRequests.length) {
+    await withRateLimitRetry(() =>
+      sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: { requests: formatRequests }
+      })
+    );
+  }
+
+  if (clearRanges.length) {
+    await withRateLimitRetry(() =>
+      sheets.spreadsheets.values.batchClear({ spreadsheetId, requestBody: { ranges: clearRanges } })
+    );
+  }
+
+  if (valueRanges.length) {
+    await pushValueRanges(sheets, spreadsheetId, valueRanges);
   }
 
   return { spreadsheetId, url: spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${spreadsheetId}` };
@@ -115,50 +148,6 @@ function buildValues(header: string[] | null, rows: { row: any[] }[]) {
     values.push(padded);
   }
   return values;
-}
-
-async function replaceSheetValues(
-  sheets: sheets_v4.Sheets,
-  spreadsheetId: string,
-  title: string,
-  sheetId: number | undefined,
-  values: any[][]
-) {
-  const totalRows = values.length;
-  const maxCols = values.reduce((m, r) => Math.max(m, r.length), 0);
-
-  if (sheetId !== undefined) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        requests: [
-          {
-            updateSheetProperties: {
-              properties: {
-                sheetId,
-                gridProperties: { rowCount: Math.max(totalRows, 1000), columnCount: Math.max(maxCols, 26) }
-              },
-              fields: "gridProperties.rowCount,gridProperties.columnCount"
-            }
-          }
-        ]
-      }
-    });
-  }
-
-  await sheets.spreadsheets.values.clear({ spreadsheetId, range: `'${title}'` });
-  if (!values.length) return;
-  const batchSize = 1000;
-  for (let start = 0; start < values.length; start += batchSize) {
-    const chunk = values.slice(start, start + batchSize);
-    const range = `${title}!A${start + 1}`;
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range,
-      valueInputOption: "RAW",
-      requestBody: { values: chunk }
-    });
-  }
 }
 
 function buildFormatRequests(
@@ -247,6 +236,102 @@ function buildFormatRequests(
   }
 
   return reqs;
+}
+
+function buildResizeRequest(sheetId: number, totalRows: number, maxCols: number): sheets_v4.Schema$Request {
+  return {
+    updateSheetProperties: {
+      properties: {
+        sheetId,
+        gridProperties: { rowCount: Math.max(totalRows, 1000), columnCount: Math.max(maxCols, 26) }
+      },
+      fields: "gridProperties.rowCount,gridProperties.columnCount"
+    }
+  };
+}
+
+function buildValueRanges(title: string, values: any[][]): sheets_v4.Schema$ValueRange[] {
+  if (!values.length) return [];
+  const chunkSize = Math.max(1, ROWS_PER_VALUE_BATCH);
+  const out: sheets_v4.Schema$ValueRange[] = [];
+  for (let start = 0; start < values.length; start += chunkSize) {
+    out.push({
+      range: `${title}!A${start + 1}`,
+      values: values.slice(start, start + chunkSize)
+    });
+  }
+  return out;
+}
+
+async function pushValueRanges(sheets: sheets_v4.Sheets, spreadsheetId: string, ranges: sheets_v4.Schema$ValueRange[]) {
+  if (!ranges.length) return;
+  const batches = chunkValueRanges(ranges, MAX_VALUE_BATCH_BYTES);
+  for (const batch of batches) {
+    await withRateLimitRetry(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: { data: batch, valueInputOption: "RAW" }
+      })
+    );
+  }
+}
+
+function chunkValueRanges(ranges: sheets_v4.Schema$ValueRange[], maxBytes: number) {
+  const batches: sheets_v4.Schema$ValueRange[][] = [];
+  let current: sheets_v4.Schema$ValueRange[] = [];
+  let accBytes = 0;
+
+  for (const range of ranges) {
+    const size = estimateRangeBytes(range);
+    if (current.length && accBytes + size > maxBytes) {
+      batches.push(current);
+      current = [];
+      accBytes = 0;
+    }
+    current.push(range);
+    accBytes += size;
+  }
+
+  if (current.length) batches.push(current);
+  return batches;
+}
+
+function estimateRangeBytes(range: sheets_v4.Schema$ValueRange) {
+  const values = range.values || [];
+  let total = 0;
+  for (const row of values) {
+    for (const cell of row || []) {
+      const str = cell == null ? "" : typeof cell === "string" ? cell : JSON.stringify(cell);
+      total += str.length + 1;
+    }
+  }
+  return total;
+}
+
+async function withRateLimitRetry<T>(fn: () => Promise<T>, attempt = 1): Promise<T> {
+  try {
+    const res = await fn();
+    if (WRITE_THROTTLE_MS > 0) {
+      await sleep(WRITE_THROTTLE_MS);
+    }
+    return res;
+  } catch (err: any) {
+    if (attempt >= MAX_RATE_LIMIT_RETRIES || !isRateLimitError(err)) throw err;
+    const delayMs = RETRY_BASE_DELAY_MS * attempt;
+    await sleep(delayMs);
+    return withRateLimitRetry(fn, attempt + 1);
+  }
+}
+
+function isRateLimitError(err: any) {
+  const message =
+    (err?.message || err?.response?.data?.error?.message || err?.response?.statusText || "").toString().toLowerCase();
+  const status = err?.code || err?.response?.status;
+  return status === 429 || message.includes("quota") || message.includes("rate limit") || message.includes("write requests");
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function padRow(row: any[], len: number) {

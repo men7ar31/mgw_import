@@ -1,22 +1,18 @@
-import { runImportOnce } from "./importer";
-import { pushToGoogleSheets } from "./sheets-export";
+import { runImportOnce, resumeImport } from "./importer";
 
 let timer: NodeJS.Timeout | null = null;
-let lastSpreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || "";
 let lastRun: { startedAt: string; finishedAt?: string; error?: string } | null = null;
 
 export function getAutoSyncStatus() {
   return {
     running: !!timer,
     lastRun,
-    spreadsheetId: lastSpreadsheetId,
     intervalMs: currentIntervalMs()
   };
 }
 
-export async function startAutoSync(params?: { spreadsheetId?: string; intervalMs?: number }) {
+export async function startAutoSync(params?: { intervalMs?: number }) {
   stopAutoSync();
-  if (params?.spreadsheetId) lastSpreadsheetId = params.spreadsheetId;
   const interval = params?.intervalMs ?? currentIntervalMs();
   timer = setInterval(() => tick().catch(() => {}), interval);
   await tick(); // fire immediately
@@ -39,12 +35,8 @@ async function tick() {
   const startedAt = new Date().toISOString();
   lastRun = { startedAt };
   try {
+    await resumeImport(); // asegura RUNNING=true para que runImportOnce procese
     await runImportOnce();
-    const res = await pushToGoogleSheets({
-      spreadsheetId: lastSpreadsheetId || undefined,
-      createNew: !lastSpreadsheetId
-    });
-    lastSpreadsheetId = res.spreadsheetId;
     lastRun.finishedAt = new Date().toISOString();
   } catch (err: any) {
     lastRun.error = err?.message || String(err);
