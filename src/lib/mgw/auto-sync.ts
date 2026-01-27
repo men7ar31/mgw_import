@@ -36,7 +36,7 @@ async function tick() {
   lastRun = { startedAt };
   try {
     await resumeImport(); // asegura RUNNING=true para que runImportOnce procese
-    await runImportOnce();
+    await runImportOnce({ ventasOnly: true });
     lastRun.finishedAt = new Date().toISOString();
   } catch (err: any) {
     lastRun.error = err?.message || String(err);

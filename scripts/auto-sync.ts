@@ -7,7 +7,7 @@ async function loop() {
   const startedAt = new Date().toISOString();
   console.log(`[sync] Inicio ciclo ${startedAt} (intervalo ${intervalMs} ms)`);
   try {
-    const importResult = await runImportOnce();
+    const importResult = await runImportOnce({ ventasOnly: true });
     console.log("[sync] runImportOnce ok", importResult);
   } catch (err) {
     console.error("[sync] error en ciclo", err);

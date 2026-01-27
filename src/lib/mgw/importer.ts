@@ -25,6 +25,7 @@ import { parseVentasExportTo2D, xlsBufferTo2D } from "./xls-utils";
 import { cleanBlock, isTotalRow, parseFirstHtmlTable, parseHtmlTable10, splitStatsBlocks } from "./html-utils";
 import { parseFlexibleNumber, parseNumberAny, round2 } from "./number-utils";
 import { CursorDoc, HistCollectionName, RowDoc } from "./types";
+import { mirrorDocsToMgw2 } from "./mgw2";
 
 const HEADER_META_PREFIX = "header:";
 const HEADER_COLLECTION = "mgw_meta";
@@ -142,7 +143,7 @@ type ImportStats = {
   cursor: CursorDoc;
 };
 
-export async function runImportOnce(): Promise<ImportStats> {
+export async function runImportOnce(opts?: { ventasOnly?: boolean }): Promise<ImportStats> {
   const db = await getDb();
   let cursor = await getCursor(db);
   if (!cursor.running) {
@@ -176,9 +177,11 @@ export async function runImportOnce(): Promise<ImportStats> {
       }
 
       await importarVentas(session, suc.nombre, d, db);
-      await importarEstadisticas(session, suc.nombre, d, db);
-      await importarClientes(session, suc.nombre, d, db);
-      await importarCC(session, suc.nombre, d, db);
+      if (!opts?.ventasOnly) {
+        await importarEstadisticas(session, suc.nombre, d, db);
+        await importarClientes(session, suc.nombre, d, db);
+        await importarCC(session, suc.nombre, d, db);
+      }
 
       processed += 1;
     }
@@ -316,6 +319,7 @@ async function importarVentas(session: MGWSession, sucursal: string, fecha: stri
     return buildDoc("Ventas_Hist", { row: rowNormalized, key, fecha: fechaVal, sucursal });
   });
 
+  await mirrorDocsToMgw2("Ventas_Hist", headerFinal, prepared);
   await bulkUpsert(db, "Ventas_Hist", prepared);
 }
 
@@ -343,6 +347,7 @@ async function importarCC(session: MGWSession, sucursal: string, fecha: string, 
 
   const keyCols = [0, 1, 2, 3, 4, 5];
   const docs = out.map((row) => buildDoc("Estadisticas_CC_Hist", { row, key: buildRowKey(row, keyCols), fecha, sucursal }));
+  await mirrorDocsToMgw2("Estadisticas_CC_Hist", header, docs);
   await bulkUpsert(db, "Estadisticas_CC_Hist", docs);
 }
 
@@ -402,6 +407,7 @@ async function appendBlockWithKey(
   if (!rows.length) return;
 
   const docs = rows.map((row) => buildDoc(sheetName, { row, key: buildRowKey(row, keyCols), fecha, sucursal }));
+  await mirrorDocsToMgw2(sheetName, header, docs);
   await bulkUpsert(db, sheetName, docs);
 }
 
