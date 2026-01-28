@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { runImportOnce } from "@/lib/mgw/importer";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST() {
   try {
     const result = await runImportOnce();

@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAutoSyncStatus, startAutoSync, stopAutoSync } from "@/lib/mgw/auto-sync";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function GET() {
   return NextResponse.json({ ok: true, status: getAutoSyncStatus() });
 }

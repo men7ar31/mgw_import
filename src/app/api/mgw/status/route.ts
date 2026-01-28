@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getStatus } from "@/lib/mgw/importer";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function GET() {
   try {
     const cursor = await getStatus();

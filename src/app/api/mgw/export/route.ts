@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { buildExcelBuffer } from "@/lib/mgw/exporter";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function GET() {
   try {
     const buffer = await buildExcelBuffer();
