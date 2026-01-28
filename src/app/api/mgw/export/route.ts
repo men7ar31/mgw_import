@@ -1,3 +1,7 @@
+// Force dynamic execution so Next no intente prerender este handler (export de Excel es pesado y depende de DB).
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 import { NextResponse } from "next/server";
 import { buildExcelBuffer } from "@/lib/mgw/exporter";
 
