@@ -19,7 +19,7 @@ Ejemplo: `.env.example`.
 - `npm run lint` – lint.
 - `npm run run:import` – runner CLI (`scripts/run-import.ts`).
 - `npm run backfill:mgw2` – replica todo lo ya importado hacia mgw2 con campos por atributo (requiere MGW2_ENABLED/URI/DB).
-- `npm run run:auto-sync` – loop que reanuda y corre solo ventas (Ventas_Hist) de forma periódica.
+- `npm run run:auto-sync` – loop que reanuda y corre solo ventas (Ventas_Hist) de forma periódica respetando el cursor guardado y arrancando desde el día siguiente al último importado.
 
 Uso CLI: `npm run run:import [start|resume|stop]` (sin argumento corre una tanda `runImportOnce`).
 

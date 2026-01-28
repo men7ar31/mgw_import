@@ -12,7 +12,7 @@ import {
   isIntercalatedHeaderVentas,
   isIntercalatedCcRow
 } from "./rows";
-import { hoyStr, listDates, normalizeDateInput } from "./date-utils";
+import { formatDate, hoyStr, listDates, normalizeDateInput } from "./date-utils";
 import {
   fetchCcXls,
   fetchClientesHtml,
@@ -31,6 +31,9 @@ const HEADER_META_PREFIX = "header:";
 const HEADER_COLLECTION = "mgw_meta";
 type HeaderDoc = { _id: string; header: string[]; updatedAt?: Date; createdAt?: Date };
 
+// Simple logger to trace the importer activity in server logs.
+const log = (...args: any[]) => console.log("[mgw-import]", ...args);
+
 async function getCursor(db: Db): Promise<CursorDoc> {
   const curCol = db.collection<CursorDoc>("mgw_cursor");
   const existing = await curCol.findOne({ _id: "mgw_cursor" });
@@ -45,6 +48,27 @@ async function getCursor(db: Db): Promise<CursorDoc> {
   };
   await curCol.insertOne(base);
   return base;
+}
+
+async function getSuggestedStartDate(db: Db, hoy: string): Promise<string | null> {
+  const latest = await db.collection<RowDoc>("Ventas_Hist").find({}).sort({ fecha: -1 }).limit(1).next();
+  if (!latest?.fecha) return null;
+  const nextDay = addDaysUtcStr(latest.fecha, 1);
+  if (nextDay > hoy) return hoy; // no future dates
+  return nextDay;
+}
+
+async function getSuggestedStartDateForSucursal(db: Db, sucursal: string, hoy: string): Promise<string | null> {
+  const latest = await db
+    .collection<RowDoc>("Ventas_Hist")
+    .find({ sucursal })
+    .sort({ fecha: -1 })
+    .limit(1)
+    .next();
+  if (!latest?.fecha) return null;
+  const nextDay = addDaysUtcStr(latest.fecha, 1);
+  if (nextDay > hoy) return hoy; // no future dates
+  return nextDay;
 }
 
 async function saveCursor(db: Db, patch: Partial<CursorDoc>) {
@@ -117,7 +141,10 @@ export async function startImport(fechaOverride?: string) {
 export async function resumeImport() {
   const db = await getDb();
   const cur = await getCursor(db);
-  const fecha = normalizeDateInput(cur.curFecha || FECHA_INICIO_MASTER);
+  const hoy = hoyStr();
+  const fechaActual = normalizeDateInput(cur.curFecha || FECHA_INICIO_MASTER);
+  const sugerido = await getSuggestedStartDate(db, hoy);
+  const fecha = normalizeDateInput(sugerido && sugerido > fechaActual ? sugerido : fechaActual);
   await saveCursor(db, {
     running: true,
     curSucIdx: cur.curSucIdx ?? 0,
@@ -146,7 +173,9 @@ type ImportStats = {
 export async function runImportOnce(opts?: { ventasOnly?: boolean }): Promise<ImportStats> {
   const db = await getDb();
   let cursor = await getCursor(db);
+  log("runImportOnce start", { running: cursor.running, curSucIdx: cursor.curSucIdx, curFecha: cursor.curFecha });
   if (!cursor.running) {
+    log("runImportOnce aborted: cursor not running");
     return { processedDays: 0, status: "stopped", cursor };
   }
 
@@ -158,10 +187,15 @@ export async function runImportOnce(opts?: { ventasOnly?: boolean }): Promise<Im
 
   for (; sucIdx < SUCURSALES.length; sucIdx++) {
     const suc = SUCURSALES[sucIdx];
+    log("Processing sucursal", suc.nombre, "idx", sucIdx);
     const session = await loginSucursal(suc);
-    const start = curFecha && curFecha < fechaInicio ? fechaInicio : curFecha || fechaInicio;
+    log("Login ok", suc.nombre);
+    const baseStart = curFecha && curFecha < fechaInicio ? fechaInicio : curFecha || fechaInicio;
+    const sugStart = await getSuggestedStartDateForSucursal(db, suc.nombre, hoy);
+    const start = normalizeDateInput(sugStart && sugStart > baseStart ? sugStart : baseStart);
 
     if (start > hoy) {
+      log("Skipping future start date", { sucursal: suc.nombre, start, hoy });
       await saveCursor(db, { curSucIdx: sucIdx + 1, curFecha: fechaInicio });
       curFecha = fechaInicio;
       cursor = await getCursor(db);
@@ -170,9 +204,11 @@ export async function runImportOnce(opts?: { ventasOnly?: boolean }): Promise<Im
 
     const dias = listDates(start, hoy);
     for (const d of dias) {
+      log("Importing day", d, "sucursal", suc.nombre);
       if (processed >= MAX_DIAS_POR_CORRIDA) {
         await saveCursor(db, { curSucIdx: sucIdx, curFecha: d, running: true });
         cursor = await getCursor(db);
+        log("Paused due to MAX_DIAS_POR_CORRIDA", { processed, nextFecha: d, sucursal: suc.nombre });
         return { processedDays: processed, status: "paused", cursor };
       }
 
@@ -190,20 +226,34 @@ export async function runImportOnce(opts?: { ventasOnly?: boolean }): Promise<Im
     await saveCursor(db, { curSucIdx: sucIdx + 1, curFecha: fechaInicio, running: true });
   }
 
-  await saveCursor(db, { running: false, curSucIdx: SUCURSALES.length, curFecha: fechaInicio });
+  // Guardamos el cursor al día actual para que el próximo ciclo solo intente los días nuevos,
+  // en lugar de volver a arrancar desde FECHA_INICIO_MASTER.
+  const hoyAgain = hoyStr();
+  await saveCursor(db, { running: false, curSucIdx: 0, curFecha: hoyAgain });
   cursor = await getCursor(db);
+  log("runImportOnce finished", { processedDays: processed, status: "done", nextStart: hoyAgain });
   return { processedDays: processed, status: "done", cursor };
 }
 
 async function importarVentas(session: MGWSession, sucursal: string, fecha: string, db: Db) {
+  log("ventas fetch", { sucursal, fecha });
   const buffer = await fetchVentasXls(session, fecha, fecha);
-  if (!buffer || buffer.length === 0) return;
+  if (!buffer || buffer.length === 0) {
+    log("ventas empty buffer", { sucursal, fecha });
+    return;
+  }
   const rawData = parseVentasExportTo2D(buffer);
-  if (!rawData || rawData.length < 2) return;
+  if (!rawData || rawData.length < 2) {
+    log("ventas no table data", { sucursal, fecha });
+    return;
+  }
 
   const headerRowIdx = findVentasHeaderRowIdx(rawData);
   const data = rawData.slice(headerRowIdx);
-  if (!data || data.length < 2) return;
+  if (!data || data.length < 2) {
+    log("ventas slice without rows", { sucursal, fecha });
+    return;
+  }
 
   const maxCols = data.reduce((max, row) => Math.max(max, row.length), 0);
   const headerRow = padRow(data[0] || [], maxCols);
@@ -303,7 +353,10 @@ async function importarVentas(session: MGWSession, sucursal: string, fecha: stri
 
   finalizeCurrent();
 
-  if (!rows.length) return;
+  if (!rows.length) {
+    log("ventas parsed 0 rows", { sucursal, fecha });
+    return;
+  }
 
   const keyCols = guessVentasKeyCols(headerSrc, idxFechaFinal);
   const prepared = rows.map((row) => {
@@ -319,19 +372,33 @@ async function importarVentas(session: MGWSession, sucursal: string, fecha: stri
     return buildDoc("Ventas_Hist", { row: rowNormalized, key, fecha: fechaVal, sucursal });
   });
 
+  log("ventas ready", { sucursal, fecha, rows: prepared.length });
   await mirrorDocsToMgw2("Ventas_Hist", headerFinal, prepared);
   await bulkUpsert(db, "Ventas_Hist", prepared);
 }
 
 async function importarCC(session: MGWSession, sucursal: string, fecha: string, db: Db) {
-  if (await yaExisteFechaSucursal(db, "Estadisticas_CC_Hist", fecha, sucursal)) return;
+  if (await yaExisteFechaSucursal(db, "Estadisticas_CC_Hist", fecha, sucursal)) {
+    log("cc skip exists", { sucursal, fecha });
+    return;
+  }
+  log("cc fetch", { sucursal, fecha });
   const buffer = await fetchCcXls(session, fecha);
-  if (!buffer || buffer.length === 0) return;
+  if (!buffer || buffer.length === 0) {
+    log("cc empty buffer", { sucursal, fecha });
+    return;
+  }
   const data = xlsBufferTo2D(buffer);
-  if (!data || data.length < 2) return;
+  if (!data || data.length < 2) {
+    log("cc no table data", { sucursal, fecha });
+    return;
+  }
 
   const parsedRows = parseCCXlsToRows(data);
-  if (!parsedRows.length) return;
+  if (!parsedRows.length) {
+    log("cc parsed 0 rows", { sucursal, fecha });
+    return;
+  }
 
   const header = ["Fecha", "Sucursal", "Cliente", "Ventas", "Pagos", "Saldo parcial"];
   await setHeader(db, "Estadisticas_CC_Hist", header);
@@ -347,15 +414,23 @@ async function importarCC(session: MGWSession, sucursal: string, fecha: string, 
 
   const keyCols = [0, 1, 2, 3, 4, 5];
   const docs = out.map((row) => buildDoc("Estadisticas_CC_Hist", { row, key: buildRowKey(row, keyCols), fecha, sucursal }));
+  log("cc ready", { sucursal, fecha, rows: docs.length });
   await mirrorDocsToMgw2("Estadisticas_CC_Hist", header, docs);
   await bulkUpsert(db, "Estadisticas_CC_Hist", docs);
 }
 
 async function importarEstadisticas(session: MGWSession, sucursal: string, fecha: string, db: Db) {
-  if (await yaExisteFechaSucursal(db, "Estadisticas_Productos_Hist", fecha, sucursal)) return;
+  if (await yaExisteFechaSucursal(db, "Estadisticas_Productos_Hist", fecha, sucursal)) {
+    log("stats skip exists", { sucursal, fecha });
+    return;
+  }
+  log("stats fetch", { sucursal, fecha });
   const html = await fetchStatsHtml(session, fecha);
   const tabla = parseHtmlTable10(html);
-  if (!tabla || !tabla.length) return;
+  if (!tabla || !tabla.length) {
+    log("stats empty table", { sucursal, fecha });
+    return;
+  }
 
   const blocks = splitStatsBlocks(tabla);
 
@@ -368,14 +443,29 @@ async function importarEstadisticas(session: MGWSession, sucursal: string, fecha
   if (blocks.formas.length) {
     await appendBlockWithKey(db, "Estadisticas_FormasPago_Hist", fecha, sucursal, blocks.formas);
   }
+  log("stats ready", {
+    sucursal,
+    fecha,
+    productos: blocks.productos.length,
+    grupos: blocks.grupos.length,
+    formas: blocks.formas.length
+  });
 }
 
 async function importarClientes(session: MGWSession, sucursal: string, fecha: string, db: Db) {
-  if (await yaExisteFechaSucursal(db, "Clientes_Hist", fecha, sucursal)) return;
+  if (await yaExisteFechaSucursal(db, "Clientes_Hist", fecha, sucursal)) {
+    log("clientes skip exists", { sucursal, fecha });
+    return;
+  }
+
+  log("clientes fetch", { sucursal, fecha });
 
   const html = await fetchClientesHtml(session, fecha);
   const tabla = parseFirstHtmlTable(html);
-  if (!tabla || !tabla.length) return;
+  if (!tabla || !tabla.length) {
+    log("clientes empty table", { sucursal, fecha });
+    return;
+  }
 
   await appendBlockWithKey(db, "Clientes_Hist", fecha, sucursal, cleanBlock(tabla));
 }
@@ -407,6 +497,7 @@ async function appendBlockWithKey(
   if (!rows.length) return;
 
   const docs = rows.map((row) => buildDoc(sheetName, { row, key: buildRowKey(row, keyCols), fecha, sucursal }));
+  log("appendBlock ready", { sheetName, sucursal, fecha, rows: rows.length });
   await mirrorDocsToMgw2(sheetName, header, docs);
   await bulkUpsert(db, sheetName, docs);
 }
@@ -536,6 +627,13 @@ export async function getHeadersMap(db?: Db) {
     headers[name] = (await getHeader(_db, name)) || null;
   }
   return headers;
+}
+
+function addDaysUtcStr(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split("-").map((n) => parseInt(n, 10));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return formatDate(dt);
 }
 
 function inferHeaderFromRows(rows: RowDoc[]): string[] | null {
