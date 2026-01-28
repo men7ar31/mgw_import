@@ -8,6 +8,7 @@ Replica en Node.js/TypeScript del script **“MGW MASTER - Multi sucursal + hist
 - `MONGO_DB` (opcional, por defecto base de la URI)
 - `FECHA_INICIO_MASTER` (opcional, default `2025-11-26`)
 - `MAX_DIAS_POR_CORRIDA` (opcional, default `45`)
+- `MGW_IMPORT_VENTAS` (opcional, default `true`; pon `false`/`0` para no traer ni procesar Ventas)
 
 Ejemplo: `.env.example`.
 

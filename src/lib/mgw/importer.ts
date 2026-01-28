@@ -26,6 +26,13 @@ import { cleanBlock, isTotalRow, parseFirstHtmlTable, parseHtmlTable10, splitSta
 import { parseFlexibleNumber, parseNumberAny, round2 } from "./number-utils";
 import { CursorDoc, HistCollectionName, RowDoc } from "./types";
 
+function shouldImportVentas() {
+  const flag = process.env.MGW_IMPORT_VENTAS;
+  if (!flag) return true;
+  const val = flag.trim().toLowerCase();
+  return !["0", "false", "no", "off", "disabled"].includes(val);
+}
+
 const HEADER_META_PREFIX = "header:";
 const HEADER_COLLECTION = "mgw_meta";
 type HeaderDoc = { _id: string; header: string[]; updatedAt?: Date; createdAt?: Date };
@@ -175,7 +182,9 @@ export async function runImportOnce(): Promise<ImportStats> {
         return { processedDays: processed, status: "paused", cursor };
       }
 
-      await importarVentas(session, suc.nombre, d, db);
+      if (shouldImportVentas()) {
+        await importarVentas(session, suc.nombre, d, db);
+      }
       await importarEstadisticas(session, suc.nombre, d, db);
       await importarClientes(session, suc.nombre, d, db);
       await importarCC(session, suc.nombre, d, db);
