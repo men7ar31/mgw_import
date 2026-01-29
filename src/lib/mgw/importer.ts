@@ -12,7 +12,7 @@ import {
   isIntercalatedHeaderVentas,
   isIntercalatedCcRow
 } from "./rows";
-import { hoyStr, listDates, normalizeDateInput } from "./date-utils";
+import { addDaysStr, hoyStr, normalizeDateInput } from "./date-utils";
 import {
   fetchCcXls,
   fetchClientesHtml,
@@ -156,49 +156,50 @@ export async function runImportOnce(): Promise<ImportStats> {
     return { processedDays: 0, status: "stopped", cursor };
   }
 
+  const sessionBySuc: Record<string, MGWSession> = {};
   const hoy = hoyStr();
   const fechaInicio = normalizeDateInput(FECHA_INICIO_MASTER);
+  let curFecha = normalizeDateInput(cursor.curFecha || fechaInicio) || fechaInicio;
+  if (curFecha < fechaInicio) curFecha = fechaInicio;
   let sucIdx = cursor.curSucIdx || 0;
-  let curFecha = normalizeDateInput(cursor.curFecha || fechaInicio);
   let processed = 0;
 
-  for (; sucIdx < SUCURSALES.length; sucIdx++) {
-    const suc = SUCURSALES[sucIdx];
-    const session = await loginSucursal(suc);
-    const start = curFecha && curFecha < fechaInicio ? fechaInicio : curFecha || fechaInicio;
-
-    if (start > hoy) {
-      await saveCursor(db, { curSucIdx: sucIdx + 1, curFecha: fechaInicio });
-      curFecha = fechaInicio;
+  while (true) {
+    if (curFecha > hoy) {
+      await saveCursor(db, { running: false, curFecha, curSucIdx: 0 });
       cursor = await getCursor(db);
-      continue;
+      return { processedDays: processed, status: "done", cursor };
     }
 
-    const dias = listDates(start, hoy);
-    for (const d of dias) {
+    for (; sucIdx < SUCURSALES.length; sucIdx++) {
       if (processed >= MAX_DIAS_POR_CORRIDA) {
-        await saveCursor(db, { curSucIdx: sucIdx, curFecha: d, running: true });
+        await saveCursor(db, { running: true, curFecha, curSucIdx: sucIdx });
         cursor = await getCursor(db);
         return { processedDays: processed, status: "paused", cursor };
       }
 
+      const suc = SUCURSALES[sucIdx];
+      const session = sessionBySuc[suc.nombre] || (sessionBySuc[suc.nombre] = await loginSucursal(suc));
+
+      console.log(`[mgw] Procesando fecha ${curFecha} - sucursal ${suc.nombre}`);
       if (shouldImportVentas()) {
-        await importarVentas(session, suc.nombre, d, db);
+        console.log(`[mgw]   -> Ventas`);
+        await importarVentas(session, suc.nombre, curFecha, db);
       }
-      await importarEstadisticas(session, suc.nombre, d, db);
-      await importarClientes(session, suc.nombre, d, db);
-      await importarCC(session, suc.nombre, d, db);
+      console.log(`[mgw]   -> Estadisticas_Productos/Grupos/Formas`);
+      await importarEstadisticas(session, suc.nombre, curFecha, db);
+      console.log(`[mgw]   -> Clientes`);
+      await importarClientes(session, suc.nombre, curFecha, db);
+      console.log(`[mgw]   -> Estadisticas_CC`);
+      await importarCC(session, suc.nombre, curFecha, db);
 
       processed += 1;
+      await saveCursor(db, { running: true, curFecha, curSucIdx: sucIdx + 1 });
     }
 
-    curFecha = fechaInicio;
-    await saveCursor(db, { curSucIdx: sucIdx + 1, curFecha: fechaInicio, running: true });
+    sucIdx = 0;
+    curFecha = addDaysStr(curFecha, 1);
   }
-
-  await saveCursor(db, { running: false, curSucIdx: SUCURSALES.length, curFecha: fechaInicio });
-  cursor = await getCursor(db);
-  return { processedDays: processed, status: "done", cursor };
 }
 
 async function importarVentas(session: MGWSession, sucursal: string, fecha: string, db: Db) {

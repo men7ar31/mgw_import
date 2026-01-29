@@ -54,9 +54,22 @@ export function listDates(desdeStr: string, hastaStr: string): string[] {
   return out;
 }
 
+export function addDaysStr(dateStr: string, days: number): string {
+  const d = toUtc(dateStr);
+  const shifted = addDaysUtc(d, days);
+  return formatDateUtc(shifted);
+}
+
 function toUtc(dateStr: string): Date {
   const [y, m, d] = dateStr.split("-").map((n) => parseInt(n, 10));
   return new Date(Date.UTC(y, m - 1, d));
+}
+
+function formatDateUtc(dateObj: Date): string {
+  const y = dateObj.getUTCFullYear();
+  const m = ("0" + (dateObj.getUTCMonth() + 1)).slice(-2);
+  const d = ("0" + dateObj.getUTCDate()).slice(-2);
+  return `${y}-${m}-${d}`;
 }
 
 function addDaysUtc(d: Date, days: number): Date {
